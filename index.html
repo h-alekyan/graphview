@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<script src="Libraries/pixi.js"></script>
+	<script src="Libraries/viewport.js"></script>
+	<script src="forces/forceAttract.js"></script>
+	<script src="https://d3js.org/d3.v6.min.js"></script>
+	<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/4.13.0/d3.min.js"></script> -->
+	
+	<title>GraphView Version 1.9</title>
+
+	</script>
+</head>
+<body>
+
+	<script type="text/javascript">
+		let width = window.innerWidth;
+		let height = window.innerHeight;
+		let globalDragging = false;
+		let forceLinkActive = true;
+		let mouseAttract = true;
+		let numberOfItems = 500;
+		let linkDistance = 100;
+		let chargeMax = 800;
+		let movable = false;
+		let simulation = null;
+		let mouse = [width/2, height/2];
+		const data = {
+		  nodes: [],
+		  links: []
+		};
+		let linkedByIndex = {};
+
+
+		const app = new PIXI.Application({width: window.innerWidth, height: window.innerHeight, transparent: true});
+
+		const viewport = new Viewport.Viewport({
+		  screenWidth: width,
+		  screenHeight: height,
+		  worldWidth: width,
+		  worldHeight: height
+		});
+
+		app.renderer.backgroundColor = 0x232323;
+
+		document.body.appendChild(app.view); // app.view = <canvas> object
+		app.stage.addChild(viewport);
+
+		
+
+		const canvasSelection = d3.select(app.view);
+
+		// canvasSelection.on('mousemove', () => {
+		//   mouse = [d3.event.clientX, d3.event.clientY];
+		// });
+
+		viewport.wheel().pinch().drag().decelerate();
+		//viewport.filterArea = app.renderer.screen;
+
+
+		// particle texture generator - used for sprites
+		function makeParicleTexture(props) {
+		  const gfx = new PIXI.Graphics();
+		  const half = props.size  * 0.5;
+		  gfx.beginFill(props.fill, props.alpha);
+		  gfx.lineStyle(props.strokeWidth, props.stroke);
+		  gfx.drawCircle(-half, -half, props.size);
+		  gfx.endFill();
+
+		  const texture = app.renderer.generateTexture(gfx, PIXI.SCALE_MODES.LINEAR, 2);
+
+		  return texture;
+		}
+
+		// make particle texture for every node
+		const texture = makeParicleTexture({
+		  fill: 0x3e3e40,
+		  alpha: 0.8,
+		  stroke: 0xffffff,
+		  strokeWidth: 3,
+		  size: 20,
+		  radius: 6
+		});
+
+		// make particle texture on hover
+		const textureHover = makeParicleTexture({
+		  fill: 0x3e3e40,
+		  alpha: 0.5,
+		  stroke: 0xffffff,
+		  strokeWidth: 3,
+		  size: 25,
+		  radius: 6
+		});
+
+
+
+		// a graphic representing links network
+		const linksGraphics = new PIXI.Graphics();
+
+		viewport.addChild(linksGraphics);
+
+		// mocking data.sprites
+		function makeSprites(numberOfItems) {
+		  const sprites = [];
+		  for (let i = 0; i < numberOfItems; i++) {
+		    const sprite = new PIXI.Sprite(texture);
+		    sprite.x = Math.random() * width;
+		    sprite.y = Math.random() * height;
+		    sprite.radius = 12;
+		    sprite.index = i;
+		    sprite.peers = d3.range(Math.floor(Math.random() * 10))
+		      .map(() => Math.floor(Math.random() * 100));
+		    sprite.anchor.x = 0.5;
+		    sprite.anchor.y = 0.5;
+		    sprite.rotation = i * 10;
+		    sprite.interactive = true;
+		    sprite.buttonMode = true;
+		    sprite.name = "Hello";
+
+		    //sprite.scale.set((Math.random() * 2 + 1) * 0.25);
+		    sprite
+		      // events for drag start
+		              .on('mousedown', onDragStart)
+		              .on('mouseover', onMouseOverPixi)
+		              .on('mouseout', onMouseOutPixi)
+		              // events for drag end
+		              .on('mouseup', onDragEnd)
+		              .on('mouseupoutside', onDragEnd)
+		              .on('touchend', onDragEnd)
+		              .on('touchendoutside', onDragEnd)
+		              // events for drag move
+		              .on('mousemove', onDragMove);
+
+		    sprites.push(sprite);
+		    viewport.addChild(sprite);
+		  }
+		  return sprites;
+		}
+		const linkFns = [
+		  i => Math.floor(Math.random() * i),
+		  i => Math.floor(Math.random() * Math.sqrt(i)),
+		  i => Math.floor(Math.sqrt(i))
+		];
+
+		function makeLinks(nodes) {
+		  const randomIndex = Math.floor((Math.random() * linkFns.length));
+		  const links = d3.range(nodes.length - 1)
+		    .map(i => ({
+		      source: linkFns[randomIndex](i),
+		      target: i + 1,
+		      value: Math.random() + 0.5
+		    }));
+
+		  links.forEach(d => {
+		    linkedByIndex[`${d.source.index},${d.target.index}`] = true;
+		  });
+		  return links;
+		}
+
+		data.nodes = makeSprites(numberOfItems);
+		data.links = makeLinks(data.nodes);
+
+
+		let forceLink = d3
+		  .forceLink(data.links)
+		  .id(d => d.index)
+		  .distance(linkDistance);
+		  // .strength(1);
+
+		const forceCharge = d3
+		  .forceManyBody()
+		  .distanceMax(chargeMax);
+		  // .distanceMin(chargeMin);
+
+		// // const forceCenter = d3.forceCenter(width * 0.5, height * 0.5);
+
+		const forceCollision = d3.forceCollide()
+		  .radius(d => d.radius);
+		  // .iterations(2);
+
+		function makeSimulation(data, manualMode) {
+		  const simulation = d3
+		    .forceSimulation(data.nodes)
+		    //.alpha(1) // default 1
+		    //.alphaDecay(0.000000005) // default ~0.0228
+		    //.alphaMin(0.001) // default 0.001
+		    //.alphaTarget(0) // default 0
+		    //.velocityDecay(0.4) // default 0.4
+		    //.force('charge', forceCharge)
+		    .force('charge', d3.forceManyBody().strength(-500))
+		    .force('link', forceLink)
+		    .force("x", d3.forceX(window.innerWidth / 2))
+		    .force("y", d3.forceY(window.innerHeight / 2))
+		    // .force('center', forceCenter)
+		    //.force('link', forceLink)
+		    .force('collision', forceCollision)
+		   
+		    .on('end', function() {
+		      // when alpha < alphaMin
+		      // this === simulation
+		    });
+
+		  if (manualMode) simulation.stop();
+
+		  return simulation;
+		}
+
+		simulation = makeSimulation(data, false);
+
+		app.ticker.add(function update(delta) {
+		  linksGraphics.clear();
+		  linksGraphics.alpha = 0.8; // transparency
+		  if (forceLinkActive) {
+		    data.links.forEach(link => {
+		      let { source, target } = link;
+		      linksGraphics.lineStyle(2, 0xA9A9A9);
+		      linksGraphics.moveTo(source.x, source.y);
+		      linksGraphics.lineTo(target.x, target.y);
+		    });
+		    linksGraphics.endFill();
+		  }
+		});
+
+		/** INTERACTION HANDLERS **/
+
+
+
+		function onDragStart(event)
+		{
+		    // store a reference to the data
+		    // the reason for this is because of multitouch
+		    // we want to track the movement of this particular touch
+		    
+
+		    this.data = event.data;
+		    this.alpha = 0.5;
+		    this.dragging = true;
+		    simulation.alphaTarget(0.3).restart()
+		    if (movable){
+
+		    	viewport.plugins['drag'].pause();
+		    }
+		    
+		    
+		}
+
+		function onDragEnd()
+		{
+			
+
+		    this.alpha = 1;
+
+		    this.dragging = false;
+
+		   
+		    // set the interaction data to null
+		    this.data = null;
+		    //viewport.plugins['drag'].resume();
+		}
+
+		function onDragMove()
+		{
+		    if (this.dragging)
+		    {
+		        var newPosition = this.data.getLocalPosition(this.parent);
+		        this.position.x = newPosition.x;
+		        this.position.y = newPosition.y;
+
+		    }
+		}
+
+
+		function onMouseOverPixi() {
+		  this.isOver = true;
+		  this.texture = textureHover;
+		  
+		 
+
+		  //this.viewport.filters = [new PIXI.filters.AlphaFilter(0.5)]
+		}
+
+		function onMouseOutPixi() {
+		  if (!this.dragging) {
+		    this.isOver = false;
+		    this.texture = texture;
+
+
+		    //viewport.filters = null;
+
+		  }
+		}
+
+
+		function handleLinkForceControl() {
+		  if (forceLinkActive) {
+		    simulation.force('link', null);
+		    simulation.alphaTarget(0.3).restart();
+		    forceLinkActive = false;
+		  } else {
+		    data.links = makeLinks(data.nodes);
+		    forceLink = d3
+		      .forceLink(data.links)
+		      .id(d => d.index)
+		      .distance(linkDistance);
+		    simulation.force('link', forceLink);
+		    simulation.alphaTarget(0.3).restart();
+		    forceLinkActive = true;
+		  }
+		}
+
+		const linksToggle = document.createElement('div');
+		linksToggle.setAttribute('class', 'control links');
+		linksToggle.onclick = handleLinkForceControl;
+		linksToggle.innerText = 'Toggle Links';
+
+		document.body.appendChild(linksToggle);
+
+		const makeMovable = document.createElement('div');
+		makeMovable.setAttribute('class', 'control links');
+		makeMovable.onclick = function mkmvbl(){
+
+			if (movable) {
+				moable = false;
+			} else{
+				movable = true;
+			}
+		};
+		makeMovable.innerText = "Make Movable";
+
+		document.body.appendChild(makeMovable);
+
+	</script>
+</body>
+</html>
